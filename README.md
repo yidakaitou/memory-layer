@@ -130,9 +130,20 @@ Measured how much fine-tuning actually changes weights, and separated two routes
 ## Quick start
 
 ```bash
-pip install torch transformers
+# The embedding model is 24M parameters. CUDA torch is unnecessary, and on
+# Windows the default PyPI wheel drags in several GB of CUDA runtime.
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+pip install transformers
+
 python demo.py      # 10 memories, 8 query types, three-layer injection
 python bench.py     # 20-query regression check with hit@1 / hit@3 / false positives
+```
+
+First run fetches `BAAI/bge-small-zh-v1.5` (~100 MB). If huggingface.co is slow or
+unreachable from your network:
+
+```bash
+HF_ENDPOINT=https://hf-mirror.com python demo.py
 ```
 
 No API keys. The demo writes 10 memories, then runs 8 query types through the same
