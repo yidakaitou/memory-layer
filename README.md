@@ -58,14 +58,36 @@ Several early "100% success" results were later retracted after stricter testing
 
 ## Results at a glance
 
+### Reproducible here
+
+`python bench.py` — 20 hand-written queries, 16 of them with a known correct answer.
+
+| Area | Result |
+|---|---|
+| Retrieval — hit@1 | **15 / 16** |
+| Retrieval — hit@3 | **15 / 16** |
+| Retrieval — false positives on 4 unrelated queries | **1 / 4** |
+| Retrieval, lexical path only (no torch installed) | 10 / 16 hit@3, 0 / 4 false positives |
+
+The one false positive is documented rather than hidden: `今天天气怎么样` scores
+0.383 against "budget is tight", while the weakest *correct* match scores 0.401.
+A 0.018 margin is not a threshold, it is a coin flip — see `docs/demo-output.md` §5.
+
+n=20, written by the same person who wrote the retrieval code. This is a
+regression check, not a benchmark.
+
+### Full pipeline (scripts not included)
+
 | Area | Before | After |
 |---|---|---|
 | Extraction — facts invented from ordinary chat | 86% of windows | **0 / 100** |
 | Extraction — recall of real facts | 45.5% | **90.9%** |
 | Hallucinated specifics | 2 instances | **0, coverage unchanged** |
-| Retrieval — short/indirect queries | 0 / 6 | **5 / 6** |
-| Retrieval — top-3 recall (hybrid) | — | **6 / 6** |
-| Regression | — | structural suite + legacy suite, both green |
+| Regression | — | structural 17/17, legacy 48/48 |
+
+These need the extraction pipeline and its training data, which are not in this
+repository. They are **reported, not reproducible here** — and that distinction is
+worth keeping explicit, because collapsing it is how a "100%" gets published.
 
 ---
 
@@ -93,7 +115,7 @@ Measured how much fine-tuning actually changes weights, and separated two routes
 
 ## Design principles
 
-**Measure before claiming.** Every number has a script behind it.
+**Measure before claiming.** Every number that ships in this repo has a script behind it. The numbers that don't are labelled as reported, not as reproducible.
 
 **Distrust 100%.** A perfect score usually means the test set leaked or the task was too easy. Three of them in this project were retracted.
 
@@ -109,12 +131,18 @@ Measured how much fine-tuning actually changes weights, and separated two routes
 
 ```bash
 pip install torch transformers
-python demo.py
+python demo.py      # 10 memories, 8 query types, three-layer injection
+python bench.py     # 20-query regression check with hit@1 / hit@3 / false positives
 ```
 
 No API keys. The demo writes 10 memories, then runs 8 query types through the same
 retrieval path, prints the three-layer injection block, and shows present-tense vs
 historical query behaviour on a superseded fact.
+
+If `torch`/`transformers` are missing, `demo.py` prints a loud banner and marks
+every empty result as **unreliable** rather than "correctly declined". A query
+that returns nothing because a module is absent is not the same as a query that
+was correctly refused, and the two must never share a line of output.
 
 `memory_core.py` is the self-contained core — store, decay, two-path retrieval, layered
 injection. It deliberately does **not** include the extraction pipeline or any training
@@ -127,9 +155,11 @@ code.
 ```
 memory_core.py   store, decay, two-path retrieval, three-layer injection (runnable)
 demo.py          end-to-end walkthrough; no API keys required
+bench.py         20-query regression check; prints hit@1 / hit@3 / false positives
 docs/
   design-notes.md   the seven judgement calls behind the design
   results.md        measured numbers, plus results that were retracted
+  demo-output.md    captured output, including the failures
 ```
 
 ---

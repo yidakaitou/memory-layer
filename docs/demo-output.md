@@ -1,6 +1,7 @@
 # Demo output
 
-Actual output of `python demo.py` (with the HF connection warnings removed).
+Actual output of `python demo.py`, semantic path enabled
+(`bge-small-zh-v1.5`, 24M). The HF loading progress bar is removed.
 
 ```
 ========================================================================
@@ -35,16 +36,15 @@ Memory Layer demo
       0.365  用户腰不好，严重时疼到无法弯腰
 
   [语义式] 我最近手头紧吗
-      0.397  用户生活费紧张，这个月快见底了
+      0.352  用户近期的可支配预算比较紧张
       0.334  用户腰不好，严重时疼到无法弯腰
 
   [历史式] 我以前住过哪里
-      0.483  用户长期住在乌鲁木齐
-      0.309  用户生活费紧张，这个月快见底了
-      0.149  用户住在上海  <- stale, down-weighted
+      0.425  用户住在上海  <- stale, down-weighted
+      0.241  用户长期住在乌鲁木齐
 
   [无关] 今天天气怎么样
-      0.366  用户生活费紧张，这个月快见底了
+      0.337  用户近期的可支配预算比较紧张
 
 [3] Three-layer injection
 ------------------------------------------------------------------------
@@ -68,22 +68,25 @@ User just asked: what's wrong with my body?
       0.940  用户长期住在乌鲁木齐
 
   query: 我以前住哪
-      0.454  用户长期住在乌鲁木齐
-      0.141  用户住在上海  <- stale
+      0.404  用户住在上海  <- stale
+      0.227  用户长期住在乌鲁木齐
 
-[5] Known limitation: semantic false positives
+[5] Known limitation: semantic score overlap
 ------------------------------------------------------------------------
-  bge-small (24M) score distribution:
-    should match      0.401 - 0.610
-    should NOT match  0.284 - 0.416   <- overlaps
+    应命中    0.460   我住哪  vs  用户长期住在乌鲁木齐
+    应命中    0.401   我身体有什么毛病来着  vs  用户腰不好，严重时疼到无法弯腰
+    应命中    0.465   我最近手头紧吗  vs  用户近期的可支配预算比较紧张
+    不应命中  0.383   今天天气怎么样  vs  用户近期的可支配预算比较紧张
+    不应命中  0.238   上次那个训练方案  vs  用户长期住在乌鲁木齐
 
-  measured: "今天天气怎么样" vs "生活费紧张" = 0.416
-            "我身体有什么毛病" vs "腰不好"  = 0.401
+  min(应命中)   = 0.401
+  max(不应命中) = 0.383
+  间距          = +0.018
 
-  -> No single floor separates these two sets.
-  -> This is the representation ceiling of a 24M model, not a tuning issue.
-  -> The fix is a second criterion (lexical cross-check / context),
-     not a lower or higher threshold.
+  -> 间距不足 0.05。在这个宽度上挑阈值，等于对着这几个样本过拟合；
+     而且 [2] 里已经出现了一个真实的 false positive（今天天气怎么样）。
+  -> 这是 24M 模型的表征上限，不是调阈值能解决的；
+     解法是第二条判据（字面交叉验证 / 上下文），不是调高或调低 floor。
 
 ========================================================================
 demo done
@@ -91,9 +94,30 @@ demo done
 
 ## What to look at
 
-**Rows that demonstrate the design**
+**Design demonstrated**
 
-- `我住哪` → only the **current** city, at 0.940
-- `我以前住哪` → the **old** city reappears at 0.141, down-weighted by 0.35 but not gone
-- `我身体有什么毛病来着` → resolves to "back pain" with **zero** shared characters — this only works because retrieval has a semantic path
-- `今天天气怎么样` → the one remaining false positive, documented as a known limitation rather than hidden
+- `我住哪` → only the **current** city, 0.940. The superseded entry is not in
+  the pool at all.
+- `我以前住过哪里` → the **old** city is back on top (0.425), the current one
+  drops to 0.241. Asking about the past flips which entry is noise.
+- `我身体有什么毛病来着` → resolves to "back pain" with **zero** shared
+  characters. Only the semantic path can do that.
+
+**Failures kept in the output**
+
+- `今天天气怎么样` → still returns a memory (0.337). The one surviving false
+  positive, and it sits 0.018 below the weakest true match — too close to
+  separate with a threshold (§5).
+
+**Two bugs this output is here to prove are fixed**
+
+1. **Historical queries used to rank the present first.** The old code applied
+   `HISTORICAL_PENALTY` to superseded entries unconditionally, so
+   `我以前住过哪里` returned Urumqi (0.483) ahead of Shanghai (0.149). The
+   penalty now depends on query intent: when the user says "以前", the stale
+   entry is the answer and the *current* entry gets down-weighted instead.
+2. **Latin/numeric queries returned nothing at all.** `_content_chars` kept
+   only CJK characters, so a query like `bf16` produced an empty unit set and
+   `search()` returned `[]` before scoring. Now ASCII runs are matched as whole
+   tokens (`#bf16`), which also stops `fp16` from matching `bf16` on shared
+   letters.

@@ -6,14 +6,19 @@ The memories below are pre-supplied (standing in for an extraction pipeline);
 everything after that is the real implementation in memory_core.py.
 
 Run:
-    pip install sentence-transformers
+    pip install torch transformers
     python demo.py
+
+If torch/transformers are missing (or the bge-small-zh-v1.5 weights cannot be
+fetched), the semantic path is disabled. That case is printed loudly on purpose:
+a query that returns nothing because a module is missing is NOT the same thing
+as a query that was correctly declined, and the two must never be confused.
 """
 from __future__ import annotations
 
 import sys
 
-from memory_core import MemoryStore
+from memory_core import MemoryStore, embedder
 
 
 def build_store() -> MemoryStore:
@@ -27,7 +32,7 @@ def build_store() -> MemoryStore:
 
     # relation
     s.add("用户腰不好，严重时疼到无法弯腰", zone="relation", confidence=0.85)
-    s.add("用户生活费紧张，这个月快见底了", zone="relation", confidence=0.8)
+    s.add("用户近期的可支配预算比较紧张", zone="relation", confidence=0.8)
 
     # task
     s.add("用户想学习Python，需要在自己电脑上安装环境", zone="task", confidence=0.85)
@@ -50,7 +55,7 @@ QUERIES = [
     ("模糊式", "我身体有什么毛病来着"),
     ("语义式", "我最近手头紧吗"),
     ("历史式", "我以前住过哪里"),
-    ("无关",   "今天天气怎么样"),
+    ("无关", "今天天气怎么样"),
 ]
 
 
@@ -58,6 +63,14 @@ def main() -> int:
     print("=" * 72)
     print("Memory Layer demo")
     print("=" * 72)
+
+    sem_ok = embedder.available()
+    if not sem_ok:
+        print()
+        print("!! bge-small-zh-v1.5 未加载（缺 torch/transformers，或无法联网取权重）")
+        print("   语义路径已禁用：下面的结果只含字面检索。")
+        print("   模糊/语义/历史查询会落空——那是模块没装，不是系统判断它不该返回。")
+        print("   确认无误后加 --lexical-only 可以让本脚本以这个状态正常退出。")
 
     store = build_store()
     active = [n for n in store.nodes if n.status == "active"]
@@ -78,7 +91,8 @@ def main() -> int:
         hits = store.search(q, k=3)
         print(f"\n  [{label}] {q}")
         if not hits:
-            print("      (no match - correctly declined)")
+            suffix = "" if sem_ok else "   <- 语义路径未启用，此行不可信"
+            print(f"      (no match){suffix}")
             continue
         for score, node in hits:
             mark = "  <- stale, down-weighted" if node.status == "superseded" else ""
@@ -92,23 +106,51 @@ def main() -> int:
     print("-" * 72)
     for q in ["我住哪", "我以前住哪"]:
         print(f"\n  query: {q}")
-        for score, node in store.search(q, k=3):
+        hits = store.search(q, k=3)
+        if not hits:
+            print("      (no match)")
+            continue
+        for score, node in hits:
             mark = "  <- stale" if node.status == "superseded" else ""
             print(f"      {score:.3f}  {node.claim}{mark}")
 
-    print(f"\n[5] Known limitation: semantic false positives")
+    print(f"\n[5] Known limitation: semantic score overlap")
     print("-" * 72)
-    print("  bge-small (24M) score distribution:")
-    print("    should match      0.401 - 0.610")
-    print("    should NOT match  0.284 - 0.416   <- overlaps")
-    print()
-    print('  measured: "今天天气怎么样" vs "生活费紧张" = 0.416')
-    print('            "我身体有什么毛病" vs "腰不好"  = 0.401')
-    print()
-    print("  -> No single floor separates these two sets.")
-    print("  -> This is the representation ceiling of a 24M model, not a tuning issue.")
-    print("  -> The fix is a second criterion (lexical cross-check / context),")
-    print("     not a lower or higher threshold.")
+    if not sem_ok:
+        print("  (semantic path disabled — nothing to measure)")
+        print("  re-run with torch/transformers installed to populate this section.")
+    else:
+        pairs = [
+            (True, "我住哪", "用户长期住在乌鲁木齐"),
+            (True, "我身体有什么毛病来着", "用户腰不好，严重时疼到无法弯腰"),
+            (True, "我最近手头紧吗", "用户近期的可支配预算比较紧张"),
+            (False, "今天天气怎么样", "用户近期的可支配预算比较紧张"),
+            (False, "上次那个训练方案", "用户长期住在乌鲁木齐"),
+        ]
+        pos: list[float] = []
+        neg: list[float] = []
+        for should_match, q, claim in pairs:
+            score = embedder.cosine(embedder.embed(q, as_query=True),
+                                    embedder.embed(claim))
+            tag = "应命中  " if should_match else "不应命中"
+            print(f"    {tag}  {score:.3f}   {q}  vs  {claim}")
+            (pos if should_match else neg).append(score)
+
+        print()
+        margin = min(pos) - max(neg)
+        print(f"  min(应命中)   = {min(pos):.3f}")
+        print(f"  max(不应命中) = {max(neg):.3f}")
+        print(f"  间距          = {margin:+.3f}")
+        print()
+        if margin <= 0:
+            print("  -> 区间重叠：不存在一个统一阈值能分开这两组。")
+        elif margin < 0.05:
+            print("  -> 间距不足 0.05。在这个宽度上挑阈值，等于对着这几个样本过拟合；")
+            print("     而且 [2] 里已经出现了一个真实的 false positive（今天天气怎么样）。")
+        else:
+            print("  -> 本组样本可分，但 n=5，不足以支撑任何阈值选择。")
+        print("  -> 这是 24M 模型的表征上限，不是调阈值能解决的；")
+        print("     解法是第二条判据（字面交叉验证 / 上下文），不是调高或调低 floor。")
 
     print("\n" + "=" * 72)
     print("demo done")

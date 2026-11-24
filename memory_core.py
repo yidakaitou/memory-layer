@@ -21,8 +21,11 @@ from dataclasses import dataclass, field
 
 ZONES = ("identity", "relation", "task", "plan")
 
-# 失效记忆在历史查询下的降权系数。不是 0——历史可查，但不与现时竞争。
+# 失效记忆在普通查询下的降权系数。不是 0——历史可查，但不与现时竞争。
 HISTORICAL_PENALTY = 0.35
+
+# 反过来：当用户明确问"以前"时，现时的记忆才是干扰，也要降权。
+PRESENT_PENALTY_ON_HISTORICAL_QUERY = 0.5
 
 _HISTORICAL_CUES = (
     "以前", "之前", "原来", "曾经", "过去", "旧", "原先", "上一次", "当时",
@@ -32,9 +35,30 @@ _HISTORICAL_CUES = (
 _STOP = set("的了是我你他她它在有和就都也很吗呢吧啊？！，。、；：哪什么怎么为什么多少几时过里")
 
 
-def _content_chars(s: str) -> set[str]:
-    """去掉停用字后的字符集合（字面检索用）。"""
-    return {c for c in (s or "") if c not in _STOP and "\u4e00" <= c <= "\u9fff"}
+def _content_units(s: str) -> set[str]:
+    """字面检索用的"内容单元"集合。
+
+    汉字按单字进集合；ASCII 字母/数字按**整词**进集合（前缀 # 防止和汉字撞名）。
+    旧实现只保留汉字，于是 "bf16" / "vllm" / "gpu" 这类查询会算出空集，
+    search() 在打分之前就 return [] —— 一个静默的全失配。
+    按整词而不是按字母，是为了让 "fp16" 不会因为共享 f/1/6 而匹配到 "bf16"。
+    """
+    out: set[str] = set()
+    buf: list[str] = []
+    for c in (s or "").lower():
+        if c.isascii() and (c.isalnum() or c in "_+-."):
+            buf.append(c)
+            continue
+        if buf:
+            out.add("#" + "".join(buf))
+            buf.clear()
+        if c in _STOP:
+            continue
+        if "\u4e00" <= c <= "\u9fff":
+            out.add(c)
+    if buf:
+        out.add("#" + "".join(buf))
+    return out
 
 
 def _is_historical(q: str) -> bool:
@@ -181,13 +205,13 @@ class MemoryStore:
         """
         if not query.strip():
             return []
-        q_chars = _content_chars(query)
-        if not q_chars:
+        q_units = _content_units(query)
+        if not q_units:
             return []
 
         want_historical = _is_historical(query)
         q_vec = embedder.embed(query, as_query=True)
-        min_match = 1 if len(q_chars) <= 2 else 2
+        min_match = 1 if len(q_units) <= 2 else 2
 
         scored: list[tuple[float, Node]] = []
         for n in self.nodes:
@@ -198,8 +222,8 @@ class MemoryStore:
             if n.valid_to and not want_historical:
                 continue
 
-            inter = q_chars & _content_chars(n.claim)
-            lexical = (len(inter) / len(q_chars)) if len(inter) >= min_match else 0.0
+            inter = q_units & _content_units(n.claim)
+            lexical = (len(inter) / len(q_units)) if len(inter) >= min_match else 0.0
 
             semantic = 0.0
             if q_vec is not None:
@@ -215,7 +239,12 @@ class MemoryStore:
                 continue
 
             score = base * self._importance(n)
-            if n.valid_to:
+            if want_historical:
+                # 用户明确问"以前"，被问的就是失效那条；现时的记忆在这时只是干扰。
+                # 旧实现这里无条件乘 HISTORICAL_PENALTY，导致「我以前住哪」把上海压得看不见。
+                if not n.valid_to:
+                    score *= PRESENT_PENALTY_ON_HISTORICAL_QUERY
+            elif n.valid_to:
                 score *= HISTORICAL_PENALTY
             if score >= min_score:
                 scored.append((round(score, 4), n))

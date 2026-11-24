@@ -19,6 +19,28 @@ Summary of what was measured. Each row corresponds to an experiment that has a s
 
 ## Retrieval
 
+Reproducible with `python bench.py` (20 hand-written queries, 16 with a known
+correct answer):
+
+| Category | hit@1 | hit@3 |
+|---|---|---|
+| Direct | 3 / 4 | 3 / 4 |
+| Indirect / anaphoric | 4 / 4 | 4 / 4 |
+| Fuzzy / semantic | 4 / 4 | 4 / 4 |
+| Historical | 4 / 4 | 4 / 4 |
+| Unrelated (should return nothing) | — | **1 false positive out of 4** |
+| **Total** | **15 / 16** | **15 / 16** |
+
+With the semantic path disabled (no torch installed): **10 / 16 hit@3, 0 / 4 false
+positives**. Every fuzzy/semantic case fails lexically, which is the point — that
+path only exists for queries with no surface overlap.
+
+**Known failure**: `今天天气怎么样` returns "budget is tight" at raw 0.383 while
+the weakest correct match sits at 0.401. Margin 0.018. There is no threshold in
+that gap that isn't fitted to these five samples.
+
+Earlier 6-query set (superseded by `bench.py`, kept for history):
+
 | Query type | Before | After |
 |---|---|---|
 | Short / indirect (literal only) | 0 / 6 | **5 / 6** |
@@ -26,6 +48,17 @@ Summary of what was measured. Each row corresponds to an experiment that has a s
 | Hybrid, top-1 | — | 5 / 6 |
 
 **Negative result kept**: blending lexical and semantic scores into one number performed *worse* than lexical alone (4/6 vs 5/6) because a high semantic score could outrank an obviously correct literal match. Dual-path routing replaced fusion.
+
+Two bugs found while building this benchmark:
+
+- **Historical queries ranked the present first.** `HISTORICAL_PENALTY` was applied
+  to superseded entries regardless of query intent, so `我以前住过哪里` put the
+  current city ahead of the old one. Fixed: when the query asks about the past, the
+  stale entry is the answer and the current entry is down-weighted instead.
+- **Latin/numeric queries returned nothing.** `_content_chars` kept only CJK
+  characters, so `bf16` produced an empty unit set and `search()` returned `[]`
+  before scoring anything. Fixed: ASCII runs are matched as whole tokens, which also
+  stops `fp16` from matching `bf16`.
 
 ---
 
