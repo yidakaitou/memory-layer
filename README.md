@@ -1,4 +1,4 @@
-# Memory Layer for LLM Agents
+﻿# Memory Layer for LLM Agents
 
 A working memory system for LLM agents — extraction, forgetting, retrieval, and evaluation — built and measured end-to-end.
 
@@ -194,4 +194,4 @@ they're written down instead of discovered in an incident.
 
 ## License
 
-TBD
+MIT - see [LICENSE](LICENSE).
