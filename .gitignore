@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Data & models
+*.npy
+*.npz
+*.parquet
+*.safetensors
+*.gguf
+*.pt
+*.pth
+models/
+data/
+cache/
+
+# Logs & results
+*.log
+*.jsonl
+results/
+
+# Editor
+.vscode/
+.idea/
+.DS_Store
+
+# Secrets
+.env
+*.key
